@@ -4,8 +4,8 @@ cd /d "%~dp0"
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
-if exist "%ROOT%\dist\RunningHubImageGenerator.exe" (
-    start "" "%ROOT%\dist\RunningHubImageGenerator.exe"
+if exist "%ROOT%\dist\NanoBananaImageGenerator.exe" (
+    start "" "%ROOT%\dist\NanoBananaImageGenerator.exe"
     exit /b 0
 )
 
