@@ -69,6 +69,7 @@ DEFAULT_MAX_TASK_RETRY = 3
 DEFAULT_DELETE_TASK_DELETE_IMAGE = False
 DEFAULT_SINGLE_OUTPUT_FOLDER_NAME = "Desktop"
 DEFAULT_OUTPUT_FOLDER_NAME = "香蕉生成"
+DEFAULT_DROP_ADD_TO_FOLDER = False
 
 
 def get_app_dir() -> Path:
@@ -130,6 +131,25 @@ def format_elapsed(seconds: float) -> str:
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def now_text() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def prompt_default_note(prompt: str) -> str:
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return "未命名"
+    compact = re.sub(r"\s+", " ", prompt)
+    return compact[:5]
+
+
+def prompt_snippet(prompt: str, limit: int = 24) -> str:
+    prompt = re.sub(r"\s+", " ", (prompt or "").strip())
+    if len(prompt) <= limit:
+        return prompt
+    return prompt[:limit] + "..."
 
 
 class ApiRateLimitError(RuntimeError):
@@ -303,6 +323,7 @@ class SettingsDialog(tk.Toplevel):
         self.remember_var = tk.BooleanVar(value=master.remember_api_key_var.get())
         self.max_retry_var = tk.StringVar(value=master.max_retry_var.get())
         self.delete_task_delete_image_var = tk.BooleanVar(value=master.delete_task_delete_image_var.get())
+        self.drop_add_to_folder_var = tk.BooleanVar(value=master.drop_add_to_folder_var.get())
         self.show_plain = False
 
         self.columnconfigure(1, weight=1)
@@ -327,14 +348,20 @@ class SettingsDialog(tk.Toplevel):
             variable=self.delete_task_delete_image_var,
         ).grid(row=3, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 8))
 
+        ttk.Checkbutton(
+            self,
+            text="源图预览拖入时，自动添加到当前图片文件夹（无文件夹时自动在桌面创建时间戳文件夹）",
+            variable=self.drop_add_to_folder_var,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 8))
+
         ttk.Label(
             self,
             text="说明：支持填写多个 API Key，会自动统计所有 Key 的总余额。实际生成默认使用第一个 Key。",
             foreground="#666666",
-        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 12))
+        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 12))
 
         btns = ttk.Frame(self)
-        btns.grid(row=5, column=0, columnspan=3, sticky="e", padx=12, pady=(0, 12))
+        btns.grid(row=6, column=0, columnspan=3, sticky="e", padx=12, pady=(0, 12))
         ttk.Button(btns, text="保存", command=self.save).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="取消", command=self.destroy).pack(side="left")
 
@@ -363,11 +390,205 @@ class SettingsDialog(tk.Toplevel):
         self.master_app.remember_api_key_var.set(bool(self.remember_var.get()))
         self.master_app.max_retry_var.set(str(max_retry))
         self.master_app.delete_task_delete_image_var.set(bool(self.delete_task_delete_image_var.get()))
+        self.master_app.drop_add_to_folder_var.set(bool(self.drop_add_to_folder_var.get()))
         self.master_app.save_ui_config_only()
         self.master_app.refresh_settings_state_label()
         self.master_app.refresh_balance_async()
-        self.master_app.append_log(f"设置已保存。共 {len(keys)} 个 API Key，最大重试次数：{max_retry}。")
+        drop_mode = "拖入自动入当前图片文件夹" if self.drop_add_to_folder_var.get() else "拖入仅作为单图预览"
+        self.master_app.append_log(f"设置已保存。共 {len(keys)} 个 API Key，最大重试次数：{max_retry}，{drop_mode}。")
         self.destroy()
+
+
+class PromptEditDialog(tk.Toplevel):
+    def __init__(self, master: "App", entry: Optional[dict] = None):
+        super().__init__(master)
+        self.master_app = master
+        self.entry = dict(entry) if entry else None
+        self.title("提示词编辑")
+        self.transient(master)
+        self.grab_set()
+        self.geometry(f"900x560+{master.winfo_rootx() + 80}+{master.winfo_rooty() + 80}")
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        top = ttk.Frame(self, padding=12)
+        top.grid(row=0, column=0, sticky="ew")
+        top.columnconfigure(1, weight=1)
+        ttk.Label(top, text="备注").grid(row=0, column=0, sticky="w")
+        self.note_var = tk.StringVar(value=(self.entry or {}).get("note", ""))
+        ttk.Entry(top, textvariable=self.note_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        self.prompt_text = tk.Text(self, wrap="word", font=("Microsoft YaHei UI", 10))
+        self.prompt_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.prompt_text.insert("1.0", (self.entry or {}).get("prompt", ""))
+
+        btns = ttk.Frame(self, padding=(12, 0, 12, 12))
+        btns.grid(row=2, column=0, sticky="e")
+        ttk.Button(btns, text="保存", command=self.on_save).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="应用到主页", command=self.on_apply).pack(side="left", padx=(0, 8))
+        if self.entry:
+            ttk.Button(btns, text="删除", command=self.on_delete).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="取消", command=self.destroy).pack(side="left")
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def _collect(self) -> Optional[dict]:
+        prompt = self.prompt_text.get("1.0", "end").strip()
+        if not prompt:
+            messagebox.showwarning(APP_TITLE, "提示词不能为空。", parent=self)
+            return None
+        note = self.note_var.get().strip() or prompt_default_note(prompt)
+        data = dict(self.entry) if self.entry else {}
+        data.update({
+            "id": data.get("id") or uuid.uuid4().hex,
+            "note": note,
+            "prompt": prompt,
+            "last_used": data.get("last_used", ""),
+            "created_at": data.get("created_at") or now_text(),
+        })
+        return data
+
+    def on_save(self) -> None:
+        data = self._collect()
+        if not data:
+            return
+        self.master_app.save_managed_prompt(data)
+        self.destroy()
+
+    def on_apply(self) -> None:
+        data = self._collect()
+        if not data:
+            return
+        self.master_app.apply_prompt_to_main(data["prompt"])
+        self.note_var.set(data["note"])
+
+    def on_delete(self) -> None:
+        if self.entry and messagebox.askyesno(APP_TITLE, "确定删除这条固定提示词吗？", parent=self):
+            self.master_app.delete_managed_prompt(self.entry.get("id"))
+            self.destroy()
+
+
+class PromptManagerDialog(tk.Toplevel):
+    def __init__(self, master: "App"):
+        super().__init__(master)
+        self.master_app = master
+        self.title("提示词管理")
+        self.transient(master)
+        self.geometry(f"960x600+{master.winfo_rootx() + 50}+{master.winfo_rooty() + 50}")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        top = ttk.Frame(self, padding=12)
+        top.grid(row=0, column=0, sticky="ew")
+        ttk.Button(top, text="新增提示词", command=self.add_new).pack(side="left")
+        ttk.Label(top, text="单击下方条目可编辑；按最后使用时间排序。", foreground="#666").pack(side="left", padx=(12, 0))
+
+        body = ttk.Frame(self, padding=(12, 0, 12, 12))
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(body, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.inner = ttk.Frame(self.canvas)
+        self.window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.window_id, width=e.width))
+        self.refresh_list()
+
+    def add_new(self) -> None:
+        PromptEditDialog(self.master_app, None)
+        self.after(200, self.refresh_list)
+
+    def refresh_list(self) -> None:
+        for child in self.inner.winfo_children():
+            child.destroy()
+        entries = self.master_app.get_sorted_prompt_templates()
+        if not entries:
+            ttk.Label(self.inner, text="暂无固定提示词", foreground="#666").pack(anchor="w", pady=8)
+            return
+        for entry in entries:
+            row = tk.Frame(self.inner, bd=1, relief="solid", bg="white")
+            row.pack(fill="x", pady=6, padx=2)
+            row.grid_columnconfigure(0, weight=1)
+
+            meta = f"{entry.get('note', '')}｜最后使用：{entry.get('last_used', '未使用') or '未使用'}"
+            title = ttk.Label(row, text=meta, background="white")
+            title.grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+
+            snippet = ttk.Label(row, text=prompt_snippet(entry.get('prompt', ''), 70), foreground="#555", background="white")
+            snippet.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 8))
+
+            ttk.Button(row, text="删除", width=8, command=lambda eid=entry.get('id'): self._delete(eid)).grid(row=0, column=1, rowspan=2, padx=10, pady=8)
+
+            for widget in (row, title, snippet):
+                widget.bind("<Button-1>", lambda _e, item=entry: self._edit(item))
+
+    def _edit(self, item: dict) -> None:
+        PromptEditDialog(self.master_app, item)
+        self.after(200, self.refresh_list)
+
+    def _delete(self, template_id: str) -> None:
+        self.master_app.delete_managed_prompt(template_id)
+        self.refresh_list()
+
+
+class PromptHistoryDialog(tk.Toplevel):
+    def __init__(self, master: "App"):
+        super().__init__(master)
+        self.master_app = master
+        self.title("提示词历史记录")
+        self.transient(master)
+        self.geometry(f"980x560+{master.winfo_rootx() + 60}+{master.winfo_rooty() + 60}")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        columns = ("note", "last_used", "snippet")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings")
+        self.tree.heading("note", text="备注")
+        self.tree.heading("last_used", text="最后使用时间")
+        self.tree.heading("snippet", text="提示词前部分内容")
+        self.tree.column("note", width=120, anchor="w")
+        self.tree.column("last_used", width=160, anchor="center")
+        self.tree.column("snippet", width=640, anchor="w")
+        self.tree.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        scroll = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns", pady=12)
+        self.tree.configure(yscrollcommand=scroll.set)
+        bottom = ttk.Frame(self, padding=(12, 0, 12, 12))
+        bottom.grid(row=1, column=0, columnspan=2, sticky="e")
+        ttk.Button(bottom, text="应用到主页", command=self.apply_selected).pack(side="left", padx=(0, 8))
+        ttk.Button(bottom, text="删除记录", command=self.delete_selected).pack(side="left", padx=(0, 8))
+        ttk.Button(bottom, text="关闭", command=self.destroy).pack(side="left")
+        self.item_map = {}
+        self.refresh_list()
+        self.tree.bind("<Double-1>", lambda _e: self.apply_selected())
+
+    def refresh_list(self) -> None:
+        self.item_map.clear()
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for entry in self.master_app.get_sorted_prompt_history():
+            iid = self.tree.insert("", "end", values=(entry.get("note", ""), entry.get("last_used", ""), prompt_snippet(entry.get("prompt", ""), 90)))
+            self.item_map[iid] = entry
+
+    def apply_selected(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        entry = self.item_map.get(sel[0])
+        if entry:
+            self.master_app.apply_prompt_to_main(entry.get("prompt", ""))
+
+    def delete_selected(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        entry = self.item_map.get(sel[0])
+        if entry:
+            self.master_app.delete_history_prompt(entry.get("prompt", ""))
+            self.refresh_list()
 
 
 class ZoomableImagePane(ttk.Frame):
@@ -540,6 +761,7 @@ class App(BASE_TK_CLASS):
         self.current_source_preview_path: Optional[Path] = None
         self.current_result_preview_path: Optional[Path] = None
         self.dragged_source_path: Optional[Path] = None
+        self.temp_drag_task_ids: list[str] = []
 
         self.api_key_var = tk.StringVar()
         self.api_keys_raw_var = tk.StringVar()
@@ -555,11 +777,14 @@ class App(BASE_TK_CLASS):
         self.generation_count_var = tk.StringVar(value=str(DEFAULT_GENERATION_COUNT))
         self.max_retry_var = tk.StringVar(value=str(DEFAULT_MAX_TASK_RETRY))
         self.delete_task_delete_image_var = tk.BooleanVar(value=DEFAULT_DELETE_TASK_DELETE_IMAGE)
+        self.drop_add_to_folder_var = tk.BooleanVar(value=DEFAULT_DROP_ADD_TO_FOLDER)
         self.progress_var = tk.StringVar(value="未开始")
         self.settings_state_var = tk.StringVar(value="API Key：未设置")
         self.balance_state_var = tk.StringVar(value="API剩余总余额：未设置")
         self.mode_state_var = tk.StringVar(value=f"当前模式：文生图模式（模型：{DEFAULT_MODEL}）")
 
+        self.prompt_templates: list[dict] = []
+        self.prompt_history: list[dict] = []
         self.task_items: dict[str, dict] = {}
         self.file_rows: dict[str, str] = {}
         self.row_to_item: dict[str, str] = {}
@@ -673,9 +898,36 @@ class App(BASE_TK_CLASS):
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
         row += 1
-        ttk.Label(left, text="Prompt").grid(row=row, column=0, sticky="nw", pady=4)
-        self.prompt_text = tk.Text(left, height=13, wrap="word", font=("Microsoft YaHei UI", 10))
-        self.prompt_text.grid(row=row, column=1, columnspan=2, sticky="nsew", pady=4)
+        prompt_header = ttk.Frame(left)
+        prompt_header.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+        prompt_header.columnconfigure(0, weight=1)
+        ttk.Label(prompt_header, text="Prompt").grid(row=0, column=0, sticky="w")
+        ttk.Button(prompt_header, text="提示词管理", command=self.open_prompt_manager, width=12).grid(row=0, column=1, padx=(6, 0))
+        ttk.Button(prompt_header, text="提示词历史记录", command=self.open_prompt_history, width=14).grid(row=0, column=2, padx=(6, 0))
+
+        row += 1
+        prompt_area = ttk.Frame(left)
+        prompt_area.grid(row=row, column=0, columnspan=3, sticky="nsew", pady=4)
+        prompt_area.columnconfigure(0, weight=0)
+        prompt_area.columnconfigure(1, weight=1)
+        prompt_area.rowconfigure(0, weight=1)
+
+        template_panel = ttk.LabelFrame(prompt_area, text="提示词模板")
+        template_panel.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
+        template_panel.columnconfigure(0, weight=1)
+        template_panel.rowconfigure(0, weight=1)
+        self.prompt_template_canvas = tk.Canvas(template_panel, width=190, height=260, highlightthickness=0)
+        self.prompt_template_canvas.grid(row=0, column=0, sticky="nsew")
+        self.prompt_template_scroll = ttk.Scrollbar(template_panel, orient="vertical", command=self.prompt_template_canvas.yview)
+        self.prompt_template_scroll.grid(row=0, column=1, sticky="ns")
+        self.prompt_template_canvas.configure(yscrollcommand=self.prompt_template_scroll.set)
+        self.prompt_template_inner = ttk.Frame(self.prompt_template_canvas)
+        self.prompt_template_window = self.prompt_template_canvas.create_window((0, 0), window=self.prompt_template_inner, anchor="nw")
+        self.prompt_template_inner.bind("<Configure>", lambda _e: self.prompt_template_canvas.configure(scrollregion=self.prompt_template_canvas.bbox("all")))
+        self.prompt_template_canvas.bind("<Configure>", lambda e: self.prompt_template_canvas.itemconfigure(self.prompt_template_window, width=e.width))
+
+        self.prompt_text = tk.Text(prompt_area, height=13, wrap="word", font=("Microsoft YaHei UI", 10))
+        self.prompt_text.grid(row=0, column=1, sticky="nsew")
         left.rowconfigure(row, weight=1)
 
         row += 1
@@ -816,6 +1068,44 @@ class App(BASE_TK_CLASS):
                 paths.append(path)
         return paths
 
+    def _make_timestamped_drop_folder(self) -> Path:
+        base_name = f"NanoBanana拖入_{time.strftime('%Y%m%d_%H%M%S')}"
+        folder = get_desktop_dir() / base_name
+        idx = 2
+        while folder.exists():
+            folder = get_desktop_dir() / f"{base_name}_{idx}"
+            idx += 1
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _unique_destination_path(self, folder: Path, source_name: str) -> Path:
+        source_name = sanitize_filename(source_name)
+        stem = Path(source_name).stem or "image"
+        suffix = Path(source_name).suffix or ".png"
+        candidate = folder / f"{stem}{suffix}"
+        idx = 2
+        while candidate.exists():
+            candidate = folder / f"{stem}_{idx}{suffix}"
+            idx += 1
+        return candidate
+
+    def _copy_dropped_images_into_current_folder(self, paths: list[Path]) -> tuple[Path, list[Path]]:
+        current_folder_text = self.input_folder_var.get().strip()
+        current_folder = Path(current_folder_text) if current_folder_text else None
+        if current_folder and current_folder.exists() and current_folder.is_dir():
+            target_folder = current_folder
+        else:
+            target_folder = self._make_timestamped_drop_folder()
+            self.input_folder_var.set(str(target_folder))
+            self.append_log(f"未设置可用图片文件夹，已在桌面自动创建：{target_folder}")
+
+        copied_paths: list[Path] = []
+        for path in paths:
+            dst = self._unique_destination_path(target_folder, path.name)
+            shutil.copy2(path, dst)
+            copied_paths.append(dst)
+        return target_folder, copied_paths
+
     def on_source_drop(self, event) -> str:
         try:
             paths = self._parse_dropped_paths(getattr(event, "data", ""))
@@ -825,21 +1115,46 @@ class App(BASE_TK_CLASS):
         if not paths:
             self.append_log("未识别到可用图片，请拖入 jpg/png/webp/bmp 文件。")
             return "break"
-        added_ids = self.add_dropped_images(paths)
-        first = paths[0]
-        self.dragged_source_path = first
-        self.current_source_preview_path = first
-        self.show_image_preview(first, self.source_preview, source=True)
-        self.single_generate_btn.configure(state="normal")
-        if not self.output_folder_var.get().strip():
-            self.output_folder_var.set(str(self.get_default_output_folder_for_source(first)))
-        if added_ids:
-            row_id = self.file_rows.get(added_ids[0])
-            if row_id:
-                self.tree.selection_set(row_id)
-                self.tree.focus(row_id)
-        self.append_log(f"已拖入 {len(paths)} 张图片。")
+
+        if self.drop_add_to_folder_var.get():
+            try:
+                folder, copied_paths = self._copy_dropped_images_into_current_folder(paths)
+            except Exception as exc:
+                self.append_log(f"拖入图片并写入当前图片文件夹失败：{exc}")
+                return "break"
+            self.dragged_source_path = copied_paths[0]
+            self.current_source_preview_path = copied_paths[0]
+            self.prepare_image_rows_from_folder(str(folder))
+            self.show_image_preview(copied_paths[0], self.source_preview, source=True)
+            self.single_generate_btn.configure(state="normal")
+            if not self.output_folder_var.get().strip():
+                self.output_folder_var.set(str(self.get_default_output_folder()))
+
+            selected_row_id = None
+            for item_id, item in self.task_items.items():
+                source_path = item.get("source_path")
+                if source_path and Path(source_path) == copied_paths[0]:
+                    selected_row_id = self.file_rows.get(item_id)
+                    break
+            if selected_row_id:
+                self.tree.selection_set(selected_row_id)
+                self.tree.focus(selected_row_id)
+
+            self.append_log(f"已拖入 {len(paths)} 张图片，并添加到图片文件夹：{folder}")
+        else:
+            first = paths[0]
+            self.dragged_source_path = first
+            self.current_source_preview_path = first
+            self.show_image_preview(first, self.source_preview, source=True)
+            self.single_generate_btn.configure(state="normal")
+            self.add_temp_drag_task(first)
+            if len(paths) > 1:
+                self.append_log(f"当前设置为单图预览模式，本次仅使用第 1 张图片：{first.name}，其余 {len(paths) - 1} 张已忽略。已将该图片加入临时任务列表。")
+            else:
+                self.append_log(f"已拖入单张源图：{first.name}。已加入临时任务列表；再次拖入会覆盖上一张临时源图。")
+
         self.refresh_mode_state_label()
+        self.update_preview_action_buttons()
         self.save_ui_config_only()
         return "break"
 
@@ -926,6 +1241,108 @@ class App(BASE_TK_CLASS):
             self.mode_state_var.set(f"当前模式：图生图模式（模型：{selected_model}{suffix}）")
         else:
             self.mode_state_var.set(f"当前模式：文生图模式（模型：{selected_model}）")
+
+    def get_sorted_prompt_templates(self) -> list[dict]:
+        return sorted(
+            self.prompt_templates,
+            key=lambda x: ((x.get("last_used") or ""), (x.get("created_at") or "")),
+            reverse=True,
+        )
+
+    def get_sorted_prompt_history(self) -> list[dict]:
+        return sorted(self.prompt_history, key=lambda x: (x.get("last_used") or ""), reverse=True)
+
+    def apply_prompt_to_main(self, prompt: str) -> None:
+        self.prompt_text.delete("1.0", "end")
+        self.prompt_text.insert("1.0", prompt or "")
+        self.append_log("已将提示词应用到主页 Prompt。")
+
+    def refresh_prompt_template_list(self) -> None:
+        if not hasattr(self, "prompt_template_inner"):
+            return
+        for child in self.prompt_template_inner.winfo_children():
+            child.destroy()
+        entries = self.get_sorted_prompt_templates()
+        if not entries:
+            ttk.Label(self.prompt_template_inner, text="暂无固定提示词", foreground="#666").pack(anchor="w", padx=6, pady=6)
+            return
+        for entry in entries:
+            row = tk.Frame(self.prompt_template_inner, bd=1, relief="solid", bg="white")
+            row.pack(fill="x", pady=4, padx=4)
+            row.grid_columnconfigure(0, weight=1)
+            note = entry.get("note", "") or "未命名"
+            note_label = ttk.Label(row, text=note, font=("Microsoft YaHei UI", 9, "bold"), background="white")
+            note_label.grid(row=0, column=0, sticky="w", padx=8, pady=8)
+            use_btn = ttk.Button(row, text="使用", width=6, command=lambda p=entry.get("prompt", ""): self.apply_prompt_to_main(p))
+            use_btn.grid(row=0, column=1, sticky="e", padx=8, pady=6)
+
+    def open_prompt_manager(self) -> None:
+        PromptManagerDialog(self)
+
+    def open_prompt_history(self) -> None:
+        PromptHistoryDialog(self)
+
+    def edit_managed_prompt(self, template_id: str) -> None:
+        for entry in self.prompt_templates:
+            if entry.get("id") == template_id:
+                PromptEditDialog(self, entry)
+                return
+
+    def save_managed_prompt(self, entry: dict) -> None:
+        entry = dict(entry)
+        entry["note"] = entry.get("note") or prompt_default_note(entry.get("prompt", ""))
+        updated = False
+        for idx, old in enumerate(self.prompt_templates):
+            if old.get("id") == entry.get("id"):
+                self.prompt_templates[idx] = entry
+                updated = True
+                break
+        if not updated:
+            self.prompt_templates.append(entry)
+        self.refresh_prompt_template_list()
+        self.save_ui_config_only()
+        self.append_log(f"已保存固定提示词：{entry.get('note', '')}")
+
+    def delete_managed_prompt(self, template_id: str) -> None:
+        before = len(self.prompt_templates)
+        self.prompt_templates = [x for x in self.prompt_templates if x.get("id") != template_id]
+        if len(self.prompt_templates) != before:
+            self.refresh_prompt_template_list()
+            self.save_ui_config_only()
+            self.append_log("已删除固定提示词。")
+
+    def delete_history_prompt(self, prompt: str) -> None:
+        before = len(self.prompt_history)
+        self.prompt_history = [x for x in self.prompt_history if x.get("prompt") != prompt]
+        if len(self.prompt_history) != before:
+            self.save_ui_config_only()
+            self.append_log("已删除提示词历史记录。")
+
+    def record_prompt_usage(self, prompt: str) -> None:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return
+        now = now_text()
+        matched_template = None
+        for entry in self.prompt_templates:
+            if (entry.get("prompt") or "").strip() == prompt:
+                entry["last_used"] = now
+                matched_template = entry
+                break
+        found = False
+        for entry in self.prompt_history:
+            if (entry.get("prompt") or "").strip() == prompt:
+                entry["last_used"] = now
+                entry["note"] = entry.get("note") or (matched_template.get("note") if matched_template else prompt_default_note(prompt))
+                found = True
+                break
+        if not found:
+            self.prompt_history.append({
+                "prompt": prompt,
+                "note": matched_template.get("note") if matched_template else prompt_default_note(prompt),
+                "last_used": now,
+            })
+        self.refresh_prompt_template_list()
 
     def _on_mode_or_model_changed(self) -> None:
         self.refresh_mode_state_label()
@@ -1054,6 +1471,34 @@ class App(BASE_TK_CLASS):
         row_id = self.tree.insert("", "end", values=(f"✖ {item['name']}", "待处理", "", "", ""))
         self.file_rows[item_id] = row_id
         self.row_to_item[row_id] = item_id
+
+    def remove_temp_drag_tasks(self) -> None:
+        if not getattr(self, "temp_drag_task_ids", None):
+            return
+        for item_id in list(self.temp_drag_task_ids):
+            row_id = self.file_rows.pop(item_id, None)
+            if row_id:
+                self.row_to_item.pop(row_id, None)
+                try:
+                    self.tree.delete(row_id)
+                except Exception:
+                    pass
+            self.task_items.pop(item_id, None)
+        self.temp_drag_task_ids = []
+
+    def add_temp_drag_task(self, path: Path) -> str:
+        self.remove_temp_drag_tasks()
+        item_id, item = self._create_image_task_item(path, 1, 1, prefix="拖入_")
+        item["temporary_drop"] = True
+        self._insert_task_row(item_id, item)
+        self.temp_drag_task_ids = [item_id]
+        row_id = self.file_rows.get(item_id)
+        if row_id:
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+        self.progress.configure(maximum=max(len(self.task_items), 1), value=0)
+        self.progress_var.set(f"当前已添加 {len(self.task_items)} 个待生成任务")
+        return item_id
 
     def add_dropped_images(self, paths: list[Path]) -> list[str]:
         if not paths:
@@ -1225,22 +1670,33 @@ class App(BASE_TK_CLASS):
         except Exception as exc:
             widget.configure(image="", text=f"预览失败：{exc}", compound="center")
 
+    def _resolve_preview_source_path(self) -> Optional[Path]:
+        candidates = []
+        if self.current_source_preview_path:
+            candidates.append(self.current_source_preview_path)
+        if getattr(self, "dragged_source_path", None):
+            candidates.append(self.dragged_source_path)
+        selected = self.tree.selection()
+        if selected:
+            item_id = self.row_to_item.get(selected[0])
+            item = self.task_items.get(item_id) if item_id else None
+            if item and item.get("source_path"):
+                candidates.append(Path(item.get("source_path")))
+        for candidate in candidates:
+            try:
+                path = Path(candidate)
+                if path.exists():
+                    return path
+            except Exception:
+                pass
+        return None
+
     def update_preview_action_buttons(self) -> None:
         has_result = bool(self.current_result_preview_path and Path(self.current_result_preview_path).exists())
-        has_source = bool(self.current_source_preview_path and Path(self.current_source_preview_path).exists())
+        source_path = self._resolve_preview_source_path()
+        has_source = bool(source_path)
         self.zoom_btn.configure(state="normal" if has_result else "disabled")
-        if has_result and has_source and not self.delete_original_var.get():
-            try:
-                self.compare_btn.grid()
-            except Exception:
-                pass
-            self.compare_btn.configure(state="normal")
-        else:
-            self.compare_btn.configure(state="disabled")
-            try:
-                self.compare_btn.grid_remove()
-            except Exception:
-                pass
+        self.compare_btn.configure(state="normal" if (has_result and has_source and not self.delete_original_var.get()) else "disabled")
 
     def regenerate_current_preview(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
@@ -1269,13 +1725,14 @@ class App(BASE_TK_CLASS):
     def open_compare_preview(self) -> None:
         if not self.current_result_preview_path or not Path(self.current_result_preview_path).exists():
             return
-        if not self.current_source_preview_path or not Path(self.current_source_preview_path).exists():
+        source_path = self._resolve_preview_source_path()
+        if not source_path:
             return
         if self.delete_original_var.get():
             return
         ImagePreviewWindow(
             self,
-            [("源图", Path(self.current_source_preview_path)), ("结果图", Path(self.current_result_preview_path))],
+            [("源图", Path(source_path)), ("结果图", Path(self.current_result_preview_path))],
             regenerate_callback=self.regenerate_current_preview,
         )
 
@@ -1363,6 +1820,7 @@ class App(BASE_TK_CLASS):
         except ValueError as exc:
             messagebox.showwarning(APP_TITLE, str(exc))
             return
+        self.record_prompt_usage(config.get("prompt", ""))
         self.save_config(config)
         self.stop_event.clear()
         self.start_btn.configure(state="disabled")
@@ -1378,6 +1836,10 @@ class App(BASE_TK_CLASS):
         if self.worker_thread and self.worker_thread.is_alive():
             messagebox.showinfo(APP_TITLE, "当前已有任务在运行，请先等待完成或点击停止。")
             return
+        if source_path is None and self.current_source_preview_path and Path(self.current_source_preview_path).exists():
+            source_path = Path(self.current_source_preview_path)
+        if source_path is None and self.dragged_source_path and self.dragged_source_path.exists():
+            source_path = self.dragged_source_path
         if source_path is None:
             selected = self.tree.selection()
         else:
@@ -1388,8 +1850,6 @@ class App(BASE_TK_CLASS):
                 item = self.task_items.get(item_id)
                 if item and item.get("source_path") and Path(item["source_path"]).exists():
                     source_path = Path(item["source_path"])
-        if source_path is None and self.dragged_source_path and self.dragged_source_path.exists():
-            source_path = self.dragged_source_path
         if source_path is None:
             messagebox.showwarning(APP_TITLE, "请先拖入图片，或在任务列表里选中一张源图。")
             return
@@ -1401,6 +1861,7 @@ class App(BASE_TK_CLASS):
         except ValueError as exc:
             messagebox.showwarning(APP_TITLE, str(exc))
             return
+        self.record_prompt_usage(config.get("prompt", ""))
 
         items_override: list[tuple[str, dict]] = []
         count = config["generation_count"]
@@ -1872,10 +2333,14 @@ class App(BASE_TK_CLASS):
             "generation_count": self.generation_count_var.get().strip() or str(DEFAULT_GENERATION_COUNT),
             "max_retry_count": self.max_retry_var.get().strip() or str(DEFAULT_MAX_TASK_RETRY),
             "delete_task_delete_image": bool(self.delete_task_delete_image_var.get()),
+            "drop_add_to_folder": bool(self.drop_add_to_folder_var.get()),
+            "drop_add_to_folder": bool(self.drop_add_to_folder_var.get()),
             "prompt": self.prompt_text.get("1.0", "end").strip(),
             "remember_api_key": bool(self.remember_api_key_var.get()),
             "api_keys": self.api_keys_raw_var.get().strip() if self.remember_api_key_var.get() else "",
             "api_key": self.api_key_var.get().strip() if self.remember_api_key_var.get() else "",
+            "prompt_templates": self.prompt_templates,
+            "prompt_history": self.prompt_history,
         }
         try:
             CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1895,10 +2360,13 @@ class App(BASE_TK_CLASS):
             "generation_count": str(config.get("generation_count", DEFAULT_GENERATION_COUNT)),
             "max_retry_count": str(config.get("max_retry_count", DEFAULT_MAX_TASK_RETRY)),
             "delete_task_delete_image": bool(self.delete_task_delete_image_var.get()),
+            "drop_add_to_folder": bool(self.drop_add_to_folder_var.get()),
             "prompt": config["prompt"],
             "remember_api_key": bool(config.get("remember_api_key")),
             "api_keys": self.api_keys_raw_var.get().strip() if config.get("remember_api_key") else "",
             "api_key": config["api_key"] if config.get("remember_api_key") else "",
+            "prompt_templates": self.prompt_templates,
+            "prompt_history": self.prompt_history,
         }
         try:
             CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1926,12 +2394,15 @@ class App(BASE_TK_CLASS):
         self.generation_count_var.set(data.get("generation_count", str(DEFAULT_GENERATION_COUNT)) or str(DEFAULT_GENERATION_COUNT))
         self.max_retry_var.set(data.get("max_retry_count", str(DEFAULT_MAX_TASK_RETRY)) or str(DEFAULT_MAX_TASK_RETRY))
         self.delete_task_delete_image_var.set(bool(data.get("delete_task_delete_image", DEFAULT_DELETE_TASK_DELETE_IMAGE)))
+        self.drop_add_to_folder_var.set(bool(data.get("drop_add_to_folder", DEFAULT_DROP_ADD_TO_FOLDER)))
         self.remember_api_key_var.set(bool(data.get("remember_api_key", False)))
         saved_keys_raw = data.get("api_keys", "") or data.get("api_key", "")
         self.api_keys_raw_var.set(saved_keys_raw)
         if self.remember_api_key_var.get():
             parsed_keys = parse_api_keys(saved_keys_raw)
             self.api_key_var.set(parsed_keys[0] if parsed_keys else data.get("api_key", ""))
+        self.prompt_templates = list(data.get("prompt_templates", []) or [])
+        self.prompt_history = list(data.get("prompt_history", []) or [])
         prompt = data.get("prompt", "")
         if prompt:
             self.prompt_text.delete("1.0", "end")
@@ -1948,6 +2419,7 @@ class App(BASE_TK_CLASS):
                 self.prepare_text_rows(self.get_generation_count())
         else:
             self.prepare_text_rows(self.get_generation_count())
+        self.refresh_prompt_template_list()
         self.update_preview_action_buttons()
 
     def on_close(self) -> None:
