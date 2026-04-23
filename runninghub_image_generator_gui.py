@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import random
+from datetime import datetime
 import re
 import shutil
 import sys
@@ -1987,6 +1988,8 @@ class App(BASE_TK_CLASS):
         raise RuntimeError("提交任务失败：未知错误")
 
     def try_submit_new_attempt(self, config: dict, item_id: str, item: dict, resubmit: bool = False) -> str:
+        item["effective_model"] = config.get("effective_model")
+        item["prompt_text"] = config.get("prompt", "")
         if item.get("started_at") is None:
             item["started_at"] = time.time()
         item["finished_at"] = None
@@ -2022,6 +2025,8 @@ class App(BASE_TK_CLASS):
                 self.queue_progress(completed, total, f"阶段 1/2：已提交 {idx} / {total}，已完成 {completed} / {total}")
                 continue
             try:
+                item["effective_model"] = config.get("effective_model")
+                item["prompt_text"] = config.get("prompt", "")
                 task_id = self.try_submit_new_attempt(config, item_id, item)
                 pending_tasks[task_id] = item_id
                 self.queue_log(f"提交完成：{item['name']} -> {task_id}")
@@ -2136,6 +2141,27 @@ class App(BASE_TK_CLASS):
             self.queue_log(f"重试提交失败：{item['name']} -> {exc}")
             return False
 
+    def _build_output_prompt_name(self, prompt: str) -> str:
+        prompt = (prompt or "").replace("\r", " ").replace("\n", " ").strip()
+        prompt = re.sub(r"\s+", " ", prompt)
+        return sanitize_filename(prompt[:10] or "文生图")
+
+    def _build_output_model_name(self, model_name: str) -> str:
+        return sanitize_filename((model_name or DEFAULT_MODEL).strip())
+
+    def _build_output_stem(self, item: dict) -> str:
+        model_name = self._build_output_model_name(item.get("effective_model") or self.model_var.get())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        if item.get("mode") == "image":
+            source_path = item.get("source_path")
+            if source_path:
+                base_name = sanitize_filename(Path(source_path).stem)
+            else:
+                base_name = sanitize_filename(Path(str(item.get("base_name") or item.get("name") or "图片任务")).stem)
+        else:
+            base_name = self._build_output_prompt_name(item.get("prompt_text") or self.prompt_text.get("1.0", "end-1c"))
+        return f"{base_name}-{model_name}-{timestamp}"
+
     def handle_success_result(self, item_id: str, item_name: str, result: dict, output_root: Path, target_mb: float, delete_original: bool) -> Path:
         results = result.get("results") or []
         if not results:
@@ -2144,20 +2170,27 @@ class App(BASE_TK_CLASS):
         output_type = (results[0].get("outputType") or "png").lstrip(".")
         if not output_url:
             raise RuntimeError("任务成功，但未返回结果链接。")
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        safe_name = sanitize_filename(Path(item_name).stem)
-        original_path = output_root / f"{safe_name}_result_{timestamp}.{output_type}"
-        self.download_file(output_url, original_path)
-        self.task_items[item_id]["output_path"] = original_path
-        self.queue_row_update(item_id, status="下载完成", output_name=original_path.name, remark="")
-        self.queue_preview(item_id, original_path)
 
-        final_path = original_path
+        item = self.task_items.get(item_id) or {}
+        output_stem = self._build_output_stem(item)
+        final_ext = "jpg" if target_mb > 0 else output_type
+        final_path = output_root / f"{output_stem}.{final_ext}"
+
         if target_mb > 0:
-            compressed_path = output_root / f"{safe_name}_compressed_{timestamp}.jpg"
-            final_path = compress_image_to_target(original_path, compressed_path, target_mb)
+            temp_download_path = output_root / f"{output_stem}__raw__.{output_type}"
+            self.download_file(output_url, temp_download_path)
+            compress_image_to_target(temp_download_path, final_path, target_mb)
+            try:
+                temp_download_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             self.task_items[item_id]["output_path"] = final_path
             self.queue_row_update(item_id, status="已压缩", output_name=final_path.name, remark="")
+            self.queue_preview(item_id, final_path)
+        else:
+            self.download_file(output_url, final_path)
+            self.task_items[item_id]["output_path"] = final_path
+            self.queue_row_update(item_id, status="下载完成", output_name=final_path.name, remark="")
             self.queue_preview(item_id, final_path)
 
         if delete_original:
