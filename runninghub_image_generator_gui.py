@@ -9,7 +9,6 @@ import json
 import os
 import queue
 import random
-from datetime import datetime
 import re
 import shutil
 import sys
@@ -40,12 +39,15 @@ SUBMIT_EDIT_URL_PRO = "https://www.runninghub.cn/openapi/v2/rhart-image-n-pro/ed
 SUBMIT_TEXT_URL_PRO = "https://www.runninghub.cn/openapi/v2/rhart-image-n-pro/text-to-image"
 SUBMIT_EDIT_URL_V2 = "https://www.runninghub.cn/openapi/v2/rhart-image-n-g31-flash/image-to-image"
 SUBMIT_TEXT_URL_V2 = "https://www.runninghub.cn/openapi/v2/rhart-image-n-g31-flash/text-to-image"
+SUBMIT_EDIT_URL_GPT_IMAGE_2 = "https://www.runninghub.cn/openapi/v2/rhart-image-g-2/image-to-image"
+SUBMIT_TEXT_URL_GPT_IMAGE_2 = "https://www.runninghub.cn/openapi/v2/rhart-image-g-2/text-to-image"
 QUERY_URL = "https://www.runninghub.cn/openapi/v2/query"
 ACCOUNT_STATUS_URL = "https://www.runninghub.cn/uc/openapi/accountStatus"
 
 MODEL_NANOBANANA_V2 = "NanoBanana V2"
 MODEL_NANOBANANA_PRO = "NanoBanana Pro"
-MODEL_OPTIONS = [MODEL_NANOBANANA_V2, MODEL_NANOBANANA_PRO]
+MODEL_GPT_IMAGE_2 = "GPT-image 2.0"
+MODEL_OPTIONS = [MODEL_NANOBANANA_V2, MODEL_NANOBANANA_PRO, MODEL_GPT_IMAGE_2]
 DEFAULT_MODEL = MODEL_NANOBANANA_V2
 
 PRO_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"]
@@ -54,7 +56,16 @@ V2_ASPECT_RATIOS = PRO_ASPECT_RATIOS + ["1:4", "4:1", "1:8", "8:1"]
 IMAGE_MAX_MB_BY_MODEL = {
     MODEL_NANOBANANA_PRO: 10,
     MODEL_NANOBANANA_V2: 30,
+    MODEL_GPT_IMAGE_2: 10,
 }
+
+
+def model_supports_text(model_name: str) -> bool:
+    return model_name in (MODEL_NANOBANANA_V2, MODEL_NANOBANANA_PRO, MODEL_GPT_IMAGE_2)
+
+
+def get_supported_aspect_ratios(model_name: str) -> list[str]:
+    return list(V2_ASPECT_RATIOS if model_name == MODEL_NANOBANANA_V2 else PRO_ASPECT_RATIOS)
 
 REQUEST_TIMEOUT = 60
 DEFAULT_POLL_INTERVAL_SECONDS = 5
@@ -221,12 +232,16 @@ class RunningHubClient:
             "imageUrls": image_urls,
             "prompt": prompt,
             "aspectRatio": aspect_ratio,
-            "resolution": resolution,
         }
-        if model_name == MODEL_NANOBANANA_V2:
+        if model_name == MODEL_GPT_IMAGE_2:
+            submit_url = SUBMIT_EDIT_URL_GPT_IMAGE_2
+            error_prefix = "提交 GPT-image 2.0 图生图任务失败"
+        elif model_name == MODEL_NANOBANANA_V2:
+            payload["resolution"] = resolution
             submit_url = SUBMIT_EDIT_URL_V2
             error_prefix = "提交 NanoBanana V2 图生图任务失败"
         else:
+            payload["resolution"] = resolution
             submit_url = SUBMIT_EDIT_URL_PRO
             error_prefix = "提交 NanoBanana Pro 图生图任务失败"
 
@@ -249,12 +264,16 @@ class RunningHubClient:
         payload = {
             "prompt": prompt,
             "aspectRatio": aspect_ratio,
-            "resolution": resolution,
         }
-        if model_name == MODEL_NANOBANANA_V2:
+        if model_name == MODEL_GPT_IMAGE_2:
+            submit_url = SUBMIT_TEXT_URL_GPT_IMAGE_2
+            error_prefix = "提交 GPT-image 2.0 文生图任务失败"
+        elif model_name == MODEL_NANOBANANA_V2:
+            payload["resolution"] = resolution
             submit_url = SUBMIT_TEXT_URL_V2
             error_prefix = "提交 NanoBanana V2 文生图任务失败"
         else:
+            payload["resolution"] = resolution
             submit_url = SUBMIT_TEXT_URL_PRO
             error_prefix = "提交 NanoBanana Pro 文生图任务失败"
         response = self.session.post(
@@ -869,7 +888,8 @@ class App(BASE_TK_CLASS):
 
         row += 1
         ttk.Label(left, text="分辨率").grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Combobox(left, textvariable=self.resolution_var, values=["1k", "2k", "4k"], state="readonly").grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        self.resolution_combo = ttk.Combobox(left, textvariable=self.resolution_var, values=["1k", "2k", "4k"], state="readonly")
+        self.resolution_combo.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
 
         row += 1
         ttk.Label(left, text="压缩到多少 MB").grid(row=row, column=0, sticky="w", pady=4)
@@ -892,7 +912,8 @@ class App(BASE_TK_CLASS):
                 "2. 默认模型为 NanoBanana V2。任务名前面的 ✖ 可直接删除该任务。\n"
                 "3. 默认输出目录：图片文件夹上一级目录下的“香蕉生成”；单独生成默认导出到桌面。\n"
                 "4. 生成数量表示每张图或每次文生图会重复提交多少个任务。\n"
-                "5. 最大重试次数和“删除任务是否删除图片”在右上角“设置”里配置。"
+                "5. 最大重试次数和“删除任务是否删除图片”在右上角“设置”里配置。\n"
+                "6. GPT-image 2.0 支持文生图与图生图；未载入图片时走文生图接口，载入图片时走图生图接口。"
             ),
             foreground="#666",
             justify="left",
@@ -1163,7 +1184,8 @@ class App(BASE_TK_CLASS):
         SettingsDialog(self)
 
     def get_available_aspect_ratios(self) -> list[str]:
-        return list(V2_ASPECT_RATIOS if (self.model_var.get().strip() or DEFAULT_MODEL) == MODEL_NANOBANANA_V2 else PRO_ASPECT_RATIOS)
+        selected_model = self.model_var.get().strip() or DEFAULT_MODEL
+        return get_supported_aspect_ratios(selected_model)
 
     def update_aspect_ratio_options(self) -> None:
         values = self.get_available_aspect_ratios()
@@ -1348,6 +1370,15 @@ class App(BASE_TK_CLASS):
     def _on_mode_or_model_changed(self) -> None:
         self.refresh_mode_state_label()
         self.update_aspect_ratio_options()
+        self.update_model_dependent_ui()
+
+    def update_model_dependent_ui(self) -> None:
+        selected_model = self.model_var.get().strip() or DEFAULT_MODEL
+        if hasattr(self, "resolution_combo"):
+            if selected_model == MODEL_GPT_IMAGE_2:
+                self.resolution_combo.configure(state="disabled")
+            else:
+                self.resolution_combo.configure(state="readonly")
 
     def get_default_output_folder_for_input(self, input_folder: Path) -> Path:
         return input_folder.parent / DEFAULT_OUTPUT_FOLDER_NAME
@@ -1988,8 +2019,6 @@ class App(BASE_TK_CLASS):
         raise RuntimeError("提交任务失败：未知错误")
 
     def try_submit_new_attempt(self, config: dict, item_id: str, item: dict, resubmit: bool = False) -> str:
-        item["effective_model"] = config.get("effective_model")
-        item["prompt_text"] = config.get("prompt", "")
         if item.get("started_at") is None:
             item["started_at"] = time.time()
         item["finished_at"] = None
@@ -2025,8 +2054,6 @@ class App(BASE_TK_CLASS):
                 self.queue_progress(completed, total, f"阶段 1/2：已提交 {idx} / {total}，已完成 {completed} / {total}")
                 continue
             try:
-                item["effective_model"] = config.get("effective_model")
-                item["prompt_text"] = config.get("prompt", "")
                 task_id = self.try_submit_new_attempt(config, item_id, item)
                 pending_tasks[task_id] = item_id
                 self.queue_log(f"提交完成：{item['name']} -> {task_id}")
@@ -2141,27 +2168,6 @@ class App(BASE_TK_CLASS):
             self.queue_log(f"重试提交失败：{item['name']} -> {exc}")
             return False
 
-    def _build_output_prompt_name(self, prompt: str) -> str:
-        prompt = (prompt or "").replace("\r", " ").replace("\n", " ").strip()
-        prompt = re.sub(r"\s+", " ", prompt)
-        return sanitize_filename(prompt[:10] or "文生图")
-
-    def _build_output_model_name(self, model_name: str) -> str:
-        return sanitize_filename((model_name or DEFAULT_MODEL).strip())
-
-    def _build_output_stem(self, item: dict) -> str:
-        model_name = self._build_output_model_name(item.get("effective_model") or self.model_var.get())
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        if item.get("mode") == "image":
-            source_path = item.get("source_path")
-            if source_path:
-                base_name = sanitize_filename(Path(source_path).stem)
-            else:
-                base_name = sanitize_filename(Path(str(item.get("base_name") or item.get("name") or "图片任务")).stem)
-        else:
-            base_name = self._build_output_prompt_name(item.get("prompt_text") or self.prompt_text.get("1.0", "end-1c"))
-        return f"{base_name}-{model_name}-{timestamp}"
-
     def handle_success_result(self, item_id: str, item_name: str, result: dict, output_root: Path, target_mb: float, delete_original: bool) -> Path:
         results = result.get("results") or []
         if not results:
@@ -2170,27 +2176,20 @@ class App(BASE_TK_CLASS):
         output_type = (results[0].get("outputType") or "png").lstrip(".")
         if not output_url:
             raise RuntimeError("任务成功，但未返回结果链接。")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_name = sanitize_filename(Path(item_name).stem)
+        original_path = output_root / f"{safe_name}_result_{timestamp}.{output_type}"
+        self.download_file(output_url, original_path)
+        self.task_items[item_id]["output_path"] = original_path
+        self.queue_row_update(item_id, status="下载完成", output_name=original_path.name, remark="")
+        self.queue_preview(item_id, original_path)
 
-        item = self.task_items.get(item_id) or {}
-        output_stem = self._build_output_stem(item)
-        final_ext = "jpg" if target_mb > 0 else output_type
-        final_path = output_root / f"{output_stem}.{final_ext}"
-
+        final_path = original_path
         if target_mb > 0:
-            temp_download_path = output_root / f"{output_stem}__raw__.{output_type}"
-            self.download_file(output_url, temp_download_path)
-            compress_image_to_target(temp_download_path, final_path, target_mb)
-            try:
-                temp_download_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            compressed_path = output_root / f"{safe_name}_compressed_{timestamp}.jpg"
+            final_path = compress_image_to_target(original_path, compressed_path, target_mb)
             self.task_items[item_id]["output_path"] = final_path
             self.queue_row_update(item_id, status="已压缩", output_name=final_path.name, remark="")
-            self.queue_preview(item_id, final_path)
-        else:
-            self.download_file(output_url, final_path)
-            self.task_items[item_id]["output_path"] = final_path
-            self.queue_row_update(item_id, status="下载完成", output_name=final_path.name, remark="")
             self.queue_preview(item_id, final_path)
 
         if delete_original:
@@ -2419,7 +2418,10 @@ class App(BASE_TK_CLASS):
         self.input_folder_var.set(data.get("input_folder", ""))
         self.output_folder_var.set(data.get("output_folder", ""))
         self.single_output_var.set(data.get("single_output_folder", str(get_desktop_dir())))
-        self.model_var.set(data.get("selected_model", DEFAULT_MODEL) or DEFAULT_MODEL)
+        loaded_model = data.get("selected_model", DEFAULT_MODEL) or DEFAULT_MODEL
+        if loaded_model == "GPT-image 2.0（图生图）":
+            loaded_model = MODEL_GPT_IMAGE_2
+        self.model_var.set(loaded_model if loaded_model in MODEL_OPTIONS else DEFAULT_MODEL)
         self.aspect_ratio_var.set(data.get("aspect_ratio", "3:4") or "3:4")
         self.resolution_var.set(data.get("resolution", "1k") or "1k")
         self.target_mb_var.set(data.get("target_mb", "0") or "0")
@@ -2444,6 +2446,7 @@ class App(BASE_TK_CLASS):
         self.refresh_settings_state_label()
         self.refresh_mode_state_label()
         self.update_aspect_ratio_options()
+        self.update_model_dependent_ui()
         if self.input_folder_var.get().strip() and Path(self.input_folder_var.get().strip()).exists():
             try:
                 self.prepare_image_rows_from_folder(self.input_folder_var.get().strip())
