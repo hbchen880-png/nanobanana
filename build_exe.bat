@@ -15,25 +15,29 @@ if not exist "%ROOT%\.venv\Scripts\python.exe" (
     if errorlevel 1 goto :fail
 )
 
-call "%ROOT%\.venv\Scripts\activate.bat"
+set "VENV_PY=%ROOT%\.venv\Scripts\python.exe"
+if not exist "%VENV_PY%" (
+    echo Virtual environment python not found:
+    echo "%VENV_PY%"
+    goto :fail
+)
+
+"%VENV_PY%" -m pip install --upgrade pip setuptools wheel
 if errorlevel 1 goto :fail
 
-python -m pip install --upgrade pip setuptools wheel
+"%VENV_PY%" -m pip install -r "%ROOT%\requirements.txt"
 if errorlevel 1 goto :fail
 
-python -m pip install -r "%ROOT%\requirements.txt"
+"%VENV_PY%" -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
 
-python -m pip install --upgrade pyinstaller
-if errorlevel 1 goto :fail
-
-python -c "import tkinter, requests, tkinterdnd2; from PIL import Image, ImageTk; import runninghub_image_generator_gui as m; print('precheck ok')"
+"%VENV_PY%" -c "import tkinter, requests, tkinterdnd2; from PIL import Image, ImageTk; import runninghub_image_generator_gui as m; print('precheck ok')"
 if errorlevel 1 goto :fail
 
 if exist "%ROOT%\build" rmdir /s /q "%ROOT%\build"
 if exist "%ROOT%\dist" rmdir /s /q "%ROOT%\dist"
 
-python -m PyInstaller --noconfirm --clean "%ROOT%\NanoBananaImageGenerator.spec"
+"%VENV_PY%" -m PyInstaller --noconfirm --clean "%ROOT%\NanoBananaImageGenerator.spec"
 if errorlevel 1 goto :fail
 
 echo.
