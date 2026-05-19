@@ -52,20 +52,13 @@ DEFAULT_MODEL = MODEL_NANOBANANA_V2
 
 PRO_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"]
 V2_ASPECT_RATIOS = PRO_ASPECT_RATIOS + ["1:4", "4:1", "1:8", "8:1"]
+GPT_IMAGE_2_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "4:5", "5:4", "4:3", "3:4", "16:9", "9:16", "21:9", "9:21", "2:1", "1:2", "3:1", "1:3"]
 
 IMAGE_MAX_MB_BY_MODEL = {
     MODEL_NANOBANANA_PRO: 10,
     MODEL_NANOBANANA_V2: 30,
-    MODEL_GPT_IMAGE_2: 10,
+    MODEL_GPT_IMAGE_2: 30,
 }
-
-
-def model_supports_text(model_name: str) -> bool:
-    return model_name in (MODEL_NANOBANANA_V2, MODEL_NANOBANANA_PRO, MODEL_GPT_IMAGE_2)
-
-
-def get_supported_aspect_ratios(model_name: str) -> list[str]:
-    return list(V2_ASPECT_RATIOS if model_name == MODEL_NANOBANANA_V2 else PRO_ASPECT_RATIOS)
 
 REQUEST_TIMEOUT = 60
 DEFAULT_POLL_INTERVAL_SECONDS = 5
@@ -82,6 +75,10 @@ DEFAULT_DELETE_TASK_DELETE_IMAGE = False
 DEFAULT_SINGLE_OUTPUT_FOLDER_NAME = "Desktop"
 DEFAULT_OUTPUT_FOLDER_NAME = "香蕉生成"
 DEFAULT_DROP_ADD_TO_FOLDER = False
+FOLDER_RULE_SINGLE = "单一文件夹"
+FOLDER_RULE_MULTI_SUBFOLDERS = "目录下多个子文件夹"
+DEFAULT_IMAGE_FOLDER_RULE = FOLDER_RULE_SINGLE
+DEFAULT_SUBFOLDER_PICK_COUNT = 1
 
 
 def get_app_dir() -> Path:
@@ -121,6 +118,18 @@ def sanitize_filename(name: str) -> str:
     cleaned = cleaned.replace("\n", " ").replace("\r", " ")
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned[:120] or "task"
+
+
+def model_supports_text(model_name: str) -> bool:
+    return model_name in (MODEL_NANOBANANA_V2, MODEL_NANOBANANA_PRO, MODEL_GPT_IMAGE_2)
+
+
+def get_supported_aspect_ratios(model_name: str) -> list[str]:
+    if model_name == MODEL_NANOBANANA_V2:
+        return list(V2_ASPECT_RATIOS)
+    if model_name == MODEL_GPT_IMAGE_2:
+        return list(GPT_IMAGE_2_ASPECT_RATIOS)
+    return list(PRO_ASPECT_RATIOS)
 
 
 def parse_api_keys(raw_text: str) -> list[str]:
@@ -231,17 +240,18 @@ class RunningHubClient:
         payload = {
             "imageUrls": image_urls,
             "prompt": prompt,
-            "aspectRatio": aspect_ratio,
         }
+        if aspect_ratio:
+            payload["aspectRatio"] = aspect_ratio
+        if resolution:
+            payload["resolution"] = resolution
         if model_name == MODEL_GPT_IMAGE_2:
             submit_url = SUBMIT_EDIT_URL_GPT_IMAGE_2
             error_prefix = "提交 GPT-image 2.0 图生图任务失败"
         elif model_name == MODEL_NANOBANANA_V2:
-            payload["resolution"] = resolution
             submit_url = SUBMIT_EDIT_URL_V2
             error_prefix = "提交 NanoBanana V2 图生图任务失败"
         else:
-            payload["resolution"] = resolution
             submit_url = SUBMIT_EDIT_URL_PRO
             error_prefix = "提交 NanoBanana Pro 图生图任务失败"
 
@@ -263,17 +273,18 @@ class RunningHubClient:
     def submit_text_task(self, prompt: str, aspect_ratio: str, resolution: str, model_name: str) -> str:
         payload = {
             "prompt": prompt,
-            "aspectRatio": aspect_ratio,
         }
+        if aspect_ratio:
+            payload["aspectRatio"] = aspect_ratio
+        if resolution:
+            payload["resolution"] = resolution
         if model_name == MODEL_GPT_IMAGE_2:
             submit_url = SUBMIT_TEXT_URL_GPT_IMAGE_2
             error_prefix = "提交 GPT-image 2.0 文生图任务失败"
         elif model_name == MODEL_NANOBANANA_V2:
-            payload["resolution"] = resolution
             submit_url = SUBMIT_TEXT_URL_V2
             error_prefix = "提交 NanoBanana V2 文生图任务失败"
         else:
-            payload["resolution"] = resolution
             submit_url = SUBMIT_TEXT_URL_PRO
             error_prefix = "提交 NanoBanana Pro 文生图任务失败"
         response = self.session.post(
@@ -344,6 +355,8 @@ class SettingsDialog(tk.Toplevel):
         self.max_retry_var = tk.StringVar(value=master.max_retry_var.get())
         self.delete_task_delete_image_var = tk.BooleanVar(value=master.delete_task_delete_image_var.get())
         self.drop_add_to_folder_var = tk.BooleanVar(value=master.drop_add_to_folder_var.get())
+        self.image_folder_rule_var = tk.StringVar(value=master.image_folder_rule_var.get())
+        self.subfolder_pick_count_var = tk.StringVar(value=master.subfolder_pick_count_var.get())
         self.show_plain = False
 
         self.columnconfigure(1, weight=1)
@@ -374,14 +387,27 @@ class SettingsDialog(tk.Toplevel):
             variable=self.drop_add_to_folder_var,
         ).grid(row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 8))
 
+        ttk.Label(self, text="图片文件夹选择规则").grid(row=5, column=0, sticky="w", padx=12, pady=(0, 8))
+        ttk.Combobox(
+            self,
+            textvariable=self.image_folder_rule_var,
+            values=[FOLDER_RULE_SINGLE, FOLDER_RULE_MULTI_SUBFOLDERS],
+            state="readonly",
+            width=30,
+        ).grid(row=5, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=(0, 8))
+
+        ttk.Label(self, text="每个子文件夹抓取几张").grid(row=6, column=0, sticky="w", padx=12, pady=(0, 8))
+        ttk.Entry(self, textvariable=self.subfolder_pick_count_var, width=12).grid(row=6, column=1, sticky="w", padx=(0, 8), pady=(0, 8))
+        ttk.Label(self, text="-1 = 全部抓取，默认 1（仅多子文件夹规则生效）", foreground="#666666").grid(row=6, column=2, sticky="w", padx=(0, 12), pady=(0, 8))
+
         ttk.Label(
             self,
             text="说明：支持填写多个 API Key，会自动统计所有 Key 的总余额。实际生成默认使用第一个 Key。",
             foreground="#666666",
-        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 12))
+        ).grid(row=7, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 12))
 
         btns = ttk.Frame(self)
-        btns.grid(row=6, column=0, columnspan=3, sticky="e", padx=12, pady=(0, 12))
+        btns.grid(row=8, column=0, columnspan=3, sticky="e", padx=12, pady=(0, 12))
         ttk.Button(btns, text="保存", command=self.save).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="取消", command=self.destroy).pack(side="left")
 
@@ -405,17 +431,28 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showwarning(APP_TITLE, "最大重试次数必须是大于等于 0 的整数。", parent=self)
             return
 
+        try:
+            subfolder_pick_count = int(self.subfolder_pick_count_var.get().strip() or DEFAULT_SUBFOLDER_PICK_COUNT)
+            if subfolder_pick_count == 0 or subfolder_pick_count < -1:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(APP_TITLE, "每个子文件夹抓取几张必须是 -1 或大于等于 1 的整数。", parent=self)
+            return
+
         self.master_app.api_keys_raw_var.set("\n".join(keys))
         self.master_app.api_key_var.set(keys[0])
         self.master_app.remember_api_key_var.set(bool(self.remember_var.get()))
         self.master_app.max_retry_var.set(str(max_retry))
         self.master_app.delete_task_delete_image_var.set(bool(self.delete_task_delete_image_var.get()))
         self.master_app.drop_add_to_folder_var.set(bool(self.drop_add_to_folder_var.get()))
+        self.master_app.image_folder_rule_var.set(self.image_folder_rule_var.get() or DEFAULT_IMAGE_FOLDER_RULE)
+        self.master_app.subfolder_pick_count_var.set(str(subfolder_pick_count))
         self.master_app.save_ui_config_only()
         self.master_app.refresh_settings_state_label()
         self.master_app.refresh_balance_async()
         drop_mode = "拖入自动入当前图片文件夹" if self.drop_add_to_folder_var.get() else "拖入仅作为单图预览"
-        self.master_app.append_log(f"设置已保存。共 {len(keys)} 个 API Key，最大重试次数：{max_retry}，{drop_mode}。")
+        folder_rule = self.image_folder_rule_var.get() or DEFAULT_IMAGE_FOLDER_RULE
+        self.master_app.append_log(f"设置已保存。共 {len(keys)} 个 API Key，最大重试次数：{max_retry}，{drop_mode}，图片文件夹规则：{folder_rule}，每个子文件夹抓取：{subfolder_pick_count}。")
         self.destroy()
 
 
@@ -798,6 +835,8 @@ class App(BASE_TK_CLASS):
         self.max_retry_var = tk.StringVar(value=str(DEFAULT_MAX_TASK_RETRY))
         self.delete_task_delete_image_var = tk.BooleanVar(value=DEFAULT_DELETE_TASK_DELETE_IMAGE)
         self.drop_add_to_folder_var = tk.BooleanVar(value=DEFAULT_DROP_ADD_TO_FOLDER)
+        self.image_folder_rule_var = tk.StringVar(value=DEFAULT_IMAGE_FOLDER_RULE)
+        self.subfolder_pick_count_var = tk.StringVar(value=str(DEFAULT_SUBFOLDER_PICK_COUNT))
         self.progress_var = tk.StringVar(value="未开始")
         self.settings_state_var = tk.StringVar(value="API Key：未设置")
         self.balance_state_var = tk.StringVar(value="API剩余总余额：未设置")
@@ -913,7 +952,8 @@ class App(BASE_TK_CLASS):
                 "3. 默认输出目录：图片文件夹上一级目录下的“香蕉生成”；单独生成默认导出到桌面。\n"
                 "4. 生成数量表示每张图或每次文生图会重复提交多少个任务。\n"
                 "5. 最大重试次数和“删除任务是否删除图片”在右上角“设置”里配置。\n"
-                "6. GPT-image 2.0 支持文生图与图生图；未载入图片时走文生图接口，载入图片时走图生图接口。"
+                "6. 可在设置中切换图片文件夹规则：单一文件夹，或目录下多个子文件夹批量输出到对应子文件夹。\n"
+                "7. GPT-image 2.0 已恢复：未载入图片时走文生图，载入图片时走图生图。"
             ),
             foreground="#666",
             justify="left",
@@ -1261,7 +1301,8 @@ class App(BASE_TK_CLASS):
         image_count = len(self.get_current_image_task_ids())
         if self.input_folder_var.get().strip() or image_count > 0:
             suffix = f"，已载入 {image_count} 张图片" if image_count > 0 else ""
-            self.mode_state_var.set(f"当前模式：图生图模式（模型：{selected_model}{suffix}）")
+            rule_text = f"，规则：多子文件夹，每子文件夹抓取 {self.get_subfolder_pick_count()} 张" if self.is_multi_subfolder_rule() else ""
+            self.mode_state_var.set(f"当前模式：图生图模式（模型：{selected_model}{suffix}{rule_text}）")
         else:
             self.mode_state_var.set(f"当前模式：文生图模式（模型：{selected_model}）")
 
@@ -1375,16 +1416,55 @@ class App(BASE_TK_CLASS):
     def update_model_dependent_ui(self) -> None:
         selected_model = self.model_var.get().strip() or DEFAULT_MODEL
         if hasattr(self, "resolution_combo"):
-            if selected_model == MODEL_GPT_IMAGE_2:
-                self.resolution_combo.configure(state="disabled")
-            else:
-                self.resolution_combo.configure(state="readonly")
+            self.resolution_combo.configure(state="readonly")
 
     def get_default_output_folder_for_input(self, input_folder: Path) -> Path:
         return input_folder.parent / DEFAULT_OUTPUT_FOLDER_NAME
 
     def get_default_output_folder_for_source(self, source_path: Path) -> Path:
         return source_path.parent / DEFAULT_OUTPUT_FOLDER_NAME
+
+    def is_multi_subfolder_rule(self) -> bool:
+        return (self.image_folder_rule_var.get() or DEFAULT_IMAGE_FOLDER_RULE) == FOLDER_RULE_MULTI_SUBFOLDERS
+
+    def get_subfolder_pick_count(self) -> int:
+        try:
+            value = int(self.subfolder_pick_count_var.get().strip() or DEFAULT_SUBFOLDER_PICK_COUNT)
+            if value == 0 or value < -1:
+                raise ValueError
+            return value
+        except ValueError:
+            return DEFAULT_SUBFOLDER_PICK_COUNT
+
+    def collect_image_files_from_folder(self, folder: str) -> list[tuple[Path, str]]:
+        folder_path = Path(folder)
+        if not folder or not folder_path.exists():
+            return []
+        results: list[tuple[Path, str]] = []
+        if self.is_multi_subfolder_rule():
+            pick_count = self.get_subfolder_pick_count()
+            folder_counts: dict[str, int] = {}
+            candidates = sorted(
+                [p for p in folder_path.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS]
+            )
+            for path in candidates:
+                try:
+                    rel_parent = path.parent.relative_to(folder_path)
+                    rel_dir = "" if str(rel_parent) == "." else str(rel_parent)
+                except Exception:
+                    rel_dir = ""
+                current_count = folder_counts.get(rel_dir, 0)
+                if pick_count != -1 and current_count >= pick_count:
+                    continue
+                results.append((path, rel_dir))
+                folder_counts[rel_dir] = current_count + 1
+        else:
+            candidates = sorted(
+                [p for p in folder_path.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS]
+            )
+            for path in candidates:
+                results.append((path, ""))
+        return results
 
     def get_generation_count(self) -> int:
         try:
@@ -1405,7 +1485,8 @@ class App(BASE_TK_CLASS):
             raise ValueError("最大重试次数必须是大于等于 0 的整数。") from exc
 
     def select_input_folder(self) -> None:
-        folder = filedialog.askdirectory(title="选择图片文件夹")
+        title = "选择图片根目录（包含多个子文件夹）" if self.is_multi_subfolder_rule() else "选择图片文件夹"
+        folder = filedialog.askdirectory(title=title)
         if not folder:
             return
         self.input_folder_var.set(folder)
@@ -1460,9 +1541,17 @@ class App(BASE_TK_CLASS):
         self.current_result_preview_path = None
         self.current_source_preview_path = None
 
-    def _create_image_task_item(self, source_path: Path, copy_index: int = 1, total_copies: int = 1, prefix: str = "") -> tuple[str, dict]:
+    def _create_image_task_item(
+        self,
+        source_path: Path,
+        copy_index: int = 1,
+        total_copies: int = 1,
+        prefix: str = "",
+        relative_output_dir: str = "",
+    ) -> tuple[str, dict]:
         item_id = uuid.uuid4().hex
-        display_name = f"{prefix}{source_path.name}"
+        display_base = source_path.name if not relative_output_dir else f"{relative_output_dir}/{source_path.name}"
+        display_name = f"{prefix}{display_base}"
         if total_copies > 1:
             display_name = f"{display_name} ({copy_index}/{total_copies})"
         item = {
@@ -1470,6 +1559,7 @@ class App(BASE_TK_CLASS):
             "name": display_name,
             "source_path": source_path,
             "base_name": source_path.name,
+            "relative_output_dir": relative_output_dir,
             "output_path": None,
             "mode": "image",
             "retry_count": 0,
@@ -1541,7 +1631,7 @@ class App(BASE_TK_CLASS):
         added = []
         for path in paths:
             for idx in range(1, copies + 1):
-                item_id, item = self._create_image_task_item(path, idx, copies)
+                item_id, item = self._create_image_task_item(path, idx, copies, relative_output_dir="")
                 self._insert_task_row(item_id, item)
                 added.append(item_id)
         self.progress.configure(maximum=max(len(self.task_items), 1), value=0)
@@ -1553,14 +1643,16 @@ class App(BASE_TK_CLASS):
         folder_path = Path(folder)
         if not folder or not folder_path.exists():
             return
-        files = sorted([p for p in folder_path.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS])
+        files = self.collect_image_files_from_folder(folder)
         copies = self.get_generation_count()
-        for path in files:
+        for path, rel_dir in files:
             for idx in range(1, copies + 1):
-                item_id, item = self._create_image_task_item(path, idx, copies)
+                item_id, item = self._create_image_task_item(path, idx, copies, relative_output_dir=rel_dir)
                 self._insert_task_row(item_id, item)
         self.progress.configure(maximum=max(len(self.task_items), 1), value=0)
-        self.progress_var.set(f"已加载 {len(self.task_items)} 个任务")
+        rule_text = "多子文件夹" if self.is_multi_subfolder_rule() else "单文件夹"
+        pick_text = f"，每子文件夹抓取 {self.get_subfolder_pick_count()} 张" if self.is_multi_subfolder_rule() else ""
+        self.progress_var.set(f"已加载 {len(self.task_items)} 个任务（{rule_text}{pick_text}）")
         children = self.tree.get_children()
         if children:
             self.tree.selection_set(children[0])
@@ -1798,7 +1890,9 @@ class App(BASE_TK_CLASS):
             raise ValueError("压缩大小必须是大于等于 0 的数字。") from exc
 
         mode = forced_mode or ("image" if input_folder or self.get_current_image_task_ids() else "text")
-        available_ratios = V2_ASPECT_RATIOS if selected_model == MODEL_NANOBANANA_V2 else PRO_ASPECT_RATIOS
+        if mode == "text" and not model_supports_text(selected_model):
+            raise ValueError(f"{selected_model} 不支持文生图。")
+        available_ratios = get_supported_aspect_ratios(selected_model)
         if aspect_ratio not in available_ratios:
             raise ValueError(f"{selected_model} 不支持当前画面比例：{aspect_ratio}")
 
@@ -2176,20 +2270,28 @@ class App(BASE_TK_CLASS):
         output_type = (results[0].get("outputType") or "png").lstrip(".")
         if not output_url:
             raise RuntimeError("任务成功，但未返回结果链接。")
+
+        item = self.task_items.get(item_id, {})
+        relative_output_dir = str(item.get("relative_output_dir") or "").strip()
+        save_root = output_root / relative_output_dir if relative_output_dir else output_root
+        save_root.mkdir(parents=True, exist_ok=True)
+
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         safe_name = sanitize_filename(Path(item_name).stem)
-        original_path = output_root / f"{safe_name}_result_{timestamp}.{output_type}"
+        original_path = save_root / f"{safe_name}_result_{timestamp}.{output_type}"
         self.download_file(output_url, original_path)
         self.task_items[item_id]["output_path"] = original_path
-        self.queue_row_update(item_id, status="下载完成", output_name=original_path.name, remark="")
+        shown_name = str(Path(relative_output_dir) / original_path.name) if relative_output_dir else original_path.name
+        self.queue_row_update(item_id, status="下载完成", output_name=shown_name, remark="")
         self.queue_preview(item_id, original_path)
 
         final_path = original_path
         if target_mb > 0:
-            compressed_path = output_root / f"{safe_name}_compressed_{timestamp}.jpg"
+            compressed_path = save_root / f"{safe_name}_compressed_{timestamp}.jpg"
             final_path = compress_image_to_target(original_path, compressed_path, target_mb)
             self.task_items[item_id]["output_path"] = final_path
-            self.queue_row_update(item_id, status="已压缩", output_name=final_path.name, remark="")
+            shown_compressed = str(Path(relative_output_dir) / final_path.name) if relative_output_dir else final_path.name
+            self.queue_row_update(item_id, status="已压缩", output_name=shown_compressed, remark="")
             self.queue_preview(item_id, final_path)
 
         if delete_original:
@@ -2367,6 +2469,8 @@ class App(BASE_TK_CLASS):
             "delete_task_delete_image": bool(self.delete_task_delete_image_var.get()),
             "drop_add_to_folder": bool(self.drop_add_to_folder_var.get()),
             "drop_add_to_folder": bool(self.drop_add_to_folder_var.get()),
+            "image_folder_rule": self.image_folder_rule_var.get() or DEFAULT_IMAGE_FOLDER_RULE,
+            "subfolder_pick_count": self.subfolder_pick_count_var.get().strip() or str(DEFAULT_SUBFOLDER_PICK_COUNT),
             "prompt": self.prompt_text.get("1.0", "end").strip(),
             "remember_api_key": bool(self.remember_api_key_var.get()),
             "api_keys": self.api_keys_raw_var.get().strip() if self.remember_api_key_var.get() else "",
@@ -2393,6 +2497,8 @@ class App(BASE_TK_CLASS):
             "max_retry_count": str(config.get("max_retry_count", DEFAULT_MAX_TASK_RETRY)),
             "delete_task_delete_image": bool(self.delete_task_delete_image_var.get()),
             "drop_add_to_folder": bool(self.drop_add_to_folder_var.get()),
+            "image_folder_rule": self.image_folder_rule_var.get() or DEFAULT_IMAGE_FOLDER_RULE,
+            "subfolder_pick_count": self.subfolder_pick_count_var.get().strip() or str(DEFAULT_SUBFOLDER_PICK_COUNT),
             "prompt": config["prompt"],
             "remember_api_key": bool(config.get("remember_api_key")),
             "api_keys": self.api_keys_raw_var.get().strip() if config.get("remember_api_key") else "",
@@ -2430,6 +2536,9 @@ class App(BASE_TK_CLASS):
         self.max_retry_var.set(data.get("max_retry_count", str(DEFAULT_MAX_TASK_RETRY)) or str(DEFAULT_MAX_TASK_RETRY))
         self.delete_task_delete_image_var.set(bool(data.get("delete_task_delete_image", DEFAULT_DELETE_TASK_DELETE_IMAGE)))
         self.drop_add_to_folder_var.set(bool(data.get("drop_add_to_folder", DEFAULT_DROP_ADD_TO_FOLDER)))
+        loaded_rule = data.get("image_folder_rule", DEFAULT_IMAGE_FOLDER_RULE) or DEFAULT_IMAGE_FOLDER_RULE
+        self.image_folder_rule_var.set(loaded_rule if loaded_rule in (FOLDER_RULE_SINGLE, FOLDER_RULE_MULTI_SUBFOLDERS) else DEFAULT_IMAGE_FOLDER_RULE)
+        self.subfolder_pick_count_var.set(str(data.get("subfolder_pick_count", DEFAULT_SUBFOLDER_PICK_COUNT) or DEFAULT_SUBFOLDER_PICK_COUNT))
         self.remember_api_key_var.set(bool(data.get("remember_api_key", False)))
         saved_keys_raw = data.get("api_keys", "") or data.get("api_key", "")
         self.api_keys_raw_var.set(saved_keys_raw)
@@ -2446,7 +2555,6 @@ class App(BASE_TK_CLASS):
         self.refresh_settings_state_label()
         self.refresh_mode_state_label()
         self.update_aspect_ratio_options()
-        self.update_model_dependent_ui()
         if self.input_folder_var.get().strip() and Path(self.input_folder_var.get().strip()).exists():
             try:
                 self.prepare_image_rows_from_folder(self.input_folder_var.get().strip())
